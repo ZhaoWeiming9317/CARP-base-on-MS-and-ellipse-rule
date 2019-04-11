@@ -1,0 +1,275 @@
+import os
+import asyncio
+import urllib
+import urllib .parse
+import mimetypes
+from urllib import request
+from http import cookiejar
+from http import cookies
+
+root = "C:"
+keys = ('method', 'path')
+webRoot = "http://localhost:8080"
+my_cookie=b''
+# 这个列表用来存储cookie，相当于一个小的数据库
+Session_infor = []
+status = 0 #第一次进入根目录默认为0，第二次进入根目录设为1
+
+# 通过客户传来的cookie来存储listdir
+class Session:
+    def __init__(self, cookie_id, cookie_password, listdir):
+        self.cookie_id = cookie_id
+        self.cookie_password = cookie_password
+        self.listdir = listdir
+
+    def get_cookie_id(self):
+        return self.cookie_id
+
+    def get_cookie_password(self):
+        return self.cookie_password
+
+    def get_listdir(self):
+        return self.listdir
+
+    def set_cookie_id(self, cookie_id):
+        self.cookie_id = cookie_id
+
+    def set_cookie_password(self, cookie_password):
+        self.cookie_password = cookie_password
+
+    def set_listdir(self, listdir):
+        self.listdir = listdir
+
+class HTTPHeader:
+    def __init__(self):
+        self.headers = {key: None for key in keys}
+
+    def parse_header(self, line):
+        fileds = line.split(' ')
+        if fileds[0] == 'GET' or fileds[0] == 'POST' or fileds[0] == 'HEAD':
+            self.headers['method'] = fileds[0]
+            self.headers['path'] = fileds[1]
+
+    def get(self, key):
+        return self.headers.get(key)
+
+
+# 通过寻找这个客户的cookie来定位这个客户，然后为这个客户存储最新的listdir
+def certificate_in_database_and_store_information(id, password, dir):
+    global Session_infor
+    isFound = 0
+    for session in Session_infor:
+        if session.get_cookie_id() == id and session.get_cookie_password() == password:
+            session.set_listdir(dir)
+            isFound = 1
+            break
+    # 如果没有找到这个客户，说明没有存储这个客户的信息,那么就存储
+    if isFound == 0:
+        session = Session(id, password, dir)
+        Session_infor.append(session)
+
+
+def store_cookie(cookie_res, listdir):
+
+    for item in cookie_res[1:]:
+        cookie_pair = item.split('=')  # 把cookie_pair分成两个数
+        id = cookie_pair[0]
+        password = cookie_pair[1][0:-1]  # 去掉分号
+        certificate_in_database_and_store_information(id, password, listdir)
+
+def check_client_cookie(cookie_res):
+    for item in cookie_res[1:]:
+        cookie_pair = item.split('=')  # 把cookie_pair分成两个数
+        id = cookie_pair[0]
+        password = cookie_pair[1][0:-1]  # 去掉分号
+        for session in Session_infor:
+            if session.get_cookie_id() == id and session.get_cookie_password() == password:
+
+                return session.get_listdir()
+    return '/'
+
+def getmethod(header, writer, cookie_res):
+    global my_cookie,root,status
+    # 如果中途退出网站，后来又再次进入，就用cookie
+    if header.get('path') == '/':
+        # 可以获得cookie中的path
+        path = check_client_cookie(cookie_res)
+        if status == 1:
+            writer.writelines([
+            b'HTTP/1.0 302 OK\r\n',
+            b'Content-Type:text/html; charset=utf-8\r\n',
+            b'Connection: close\r\n',
+            b'\r\n',
+            b'<html><body">\r\n',
+            b'302 Found\r\n',
+            b'<body></html>\r\n',
+            b'\r\n'
+            ])
+        # 一定要改变root，应为此时报文返回的是'/'
+        totalpath = '{}{}'.format("C:", path)
+        # 存储cookie,并且可以防止报文获取chrome的/favicon.ico
+        if path != '/favicon.ico':
+            status = 1# 改变状态，从此以后再也进不了根目录了
+            listdir = path
+            store_cookie(cookie_res, listdir)
+    else:# 如果path不是root目录的话，就不要cookie，只存储cookie
+         # 不通过cookie，通过报文获得path
+        path = urllib.parse.unquote(header.get('path'), encoding="utf8")
+        # 存储cookie
+        totalpath = '{}{}'.format("C:", path)
+        if path != '/favicon.ico':
+            listdir = path
+            store_cookie(cookie_res, listdir)
+
+
+    # 防止出现get到/favicon.ico的bug
+    if header.get('path') == '/favicon.ico' or header.get('path') == '':
+        print()
+    # 如果不是file，就是文件夹，需要到下一层
+    elif os.path.isfile(totalpath) == False:
+        cut_path = totalpath[2:]
+        route = "{}{}".format('C:/', urllib.parse.unquote(cut_path, encoding="utf8")[1:]).encode('utf-8')
+        list2 = os.listdir(root + cut_path)
+        #listTemp2是用来存储HTML的
+        listTemp2 = b''
+        listTemp2 = listTemp2 + "{}\r\n".format('<a href="../">../</a>').encode('utf-8')
+        for file in list2:
+            # localpath指的是包含C:的路径
+            localpath = root + cut_path + urllib.parse.unquote(file, encoding="utf8")
+            # localpath2指的是不包含C:的路径
+            localpath2 = cut_path + urllib.parse.unquote(file, encoding="utf8")
+
+            # 文件夹和文件的路径拓展方式不同的
+            if os.path.isfile(localpath):
+                listTemp2 = listTemp2 + "{}{}{}{}{}\r\n".format('<a href="',
+                                                                urllib.parse.unquote(localpath2, encoding="utf8"), '">',
+                                                                file, '</a>').encode('utf-8')
+            else:
+                listTemp2 = listTemp2 + "{}{}{}{}{}\r\n".format('<a href="',
+                                                                urllib.parse.unquote(localpath2, encoding="utf8"), '/">',
+                                                                file, '</a>').encode('utf-8')
+        # 构造cookie,放入
+        my_cookie = "{}{}{}{}\r\n".format('Set-Cookie: session_id=choco;','Path=',
+                                        urllib.parse.unquote(path, encoding="utf8"),";Max-Age = 3000").encode("utf-8")
+
+        listHTTP = [
+            b'HTTP/1.0 200 OK\r\n',
+            b'Content-Type:text/html; charset=utf-8\r\n',
+            my_cookie,
+            b'Connection: close\r\n',
+            b'\r\n',
+            b'<html><body">\r\n',
+            b'<h1>\r\n',
+            route,
+            b'</h1><hr/>\r\n',
+            b'<pre>\r\n',
+            listTemp2,
+            b'</pre>\r\n',
+            b'<hr/>\r\n',
+            b'<body></html>\r\n',
+            b'\r\n'
+        ]
+        writer.writelines(listHTTP)
+
+    elif os.path.isfile(totalpath) == True:
+        path = urllib.parse.unquote(header.get('path'), encoding="utf8")
+        finalroot = repr("{}{}".format(root, path))[1:-1]
+        filetype = (mimetypes.guess_type(finalroot))[0]
+
+        if filetype is None:
+            filetype = 'application/octet-stream'
+        html = b''
+
+        file = open(finalroot, 'rb')
+        content_res = 'Content-Type:{}; Content-Length:{}; charset=utf-8\r\n'.format(filetype,
+                                                                                     os.path.getsize(finalroot)).encode(
+            encoding="utf-8")
+
+        try:
+            for line in file:
+                line.decode("utf-8", "ignore")
+                html += line
+        finally:
+            file.close()
+        listHTTP = [
+            b'HTTP/1.0 200 OK\r\n',
+            content_res,
+            b'Connection: close\r\n',
+            b'\r\n',
+            html,
+            b'\r\n'
+        ]
+        writer.writelines(
+            listHTTP
+        )
+    else:
+        writer.writelines([
+            b'HTTP/1.0 404 OK\r\n',
+            b'Content-Type:text/html; charset=utf-8\r\n',
+            b'Connection: close\r\n',
+            b'\r\n',
+            b'<html><body>404 Not Found<body></html>\r\n',
+            b'\r\n'
+        ])
+
+
+async def dispatch(reader, writer):
+    global my_cookie
+    header = HTTPHeader()
+    cookie_res = []
+    while True:
+        data = await reader.readline()
+        message = data.decode()
+        res = data.decode().split(" ")
+        print(res)
+        if res[0] == 'Cookie:':
+            cookie_res = res
+        header.parse_header(message)
+        if data == b'\r\n' or data == b'':
+            break
+
+    if header.get('method') == 'GET':
+        getmethod(header, writer, cookie_res)
+    elif header.get('method') == 'HEAD':
+        writer.writelines([
+            b'HTTP/1.0 404 OK\r\n',
+            b'Content-Type:text/html; charset=utf-8\r\n',
+            b'Connection: close\r\n',
+            b'\r\n'
+        ])
+    else:
+        writer.writelines([
+            b'HTTP/1.0 404 OK\r\n',
+            b'Content-Type:text/html; charset=utf-8\r\n',
+            b'Connection: close\r\n',
+            b'\r\n',
+            b'<html><body>405 Method Not Allowed<body></html>\r\n',
+            b'\r\n'
+        ])
+
+    await writer.drain()
+    writer.close()
+
+
+def get_cookies(res):
+        return res
+
+
+if __name__ == '__main__':
+
+    loop = asyncio.get_event_loop()
+    # 调用dispatch方法
+    coro = asyncio.start_server(dispatch, '127.0.0.1', 8080, loop=loop)
+    server = loop.run_until_complete(coro)
+    # Serve requests until Ctrl+C is pressed
+    print('Serving on {}'.format(server.sockets[0].getsockname()))
+
+    try:
+        loop.run_forever()
+    except KeyboardInterrupt:
+        pass
+    # Close the server
+    server.close()
+
+    loop.run_until_complete(server.wait_closed())
+    loop.close()
